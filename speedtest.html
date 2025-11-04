@@ -13,12 +13,30 @@ const WARMUP_TO=30, PROBE_TO=45, RUNS=3; // set RUNS=1 if you only want one samp
 
 main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
+// ---------- Central-time helper ----------
+function zonedISO(tz = 'America/Chicago') {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now).reduce((a,p)=>{a[p.type]=p.value;return a;},{});
+  const yyyy = parts.year, MM = parts.month, dd = parts.day;
+  const HH = parts.hour, mm = parts.minute, ss = parts.second;
+  const inDST = new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'short'})
+                  .format(now).includes('CDT');
+  const tzAbbr = inDST ? 'CDT' : 'CST';
+  return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
+}
+// ----------------------------------------
+
 async function main(){
   const device = await getDeviceName();
-  const timestamp = new Date().toISOString();
+  const timestamp = zonedISO('America/Chicago');
   let public_ip = "";
   try {
-    const r = await fetch("https://api.ipify.org?format=json", {cache:"no-store"});
+    const r = await fetch("https://api.ipify.org?format=json",{cache:"no-store"});
     public_ip = (await r.json()).ip || "";
   } catch {}
 
@@ -46,7 +64,6 @@ async function main(){
 function finish(ok, msg){
   const el = document.getElementById("s");
   el.textContent = msg || (ok ? "Done" : "Failed");
-  // auto-close after a moment (good for kiosk or workflow launch)
   setTimeout(()=>{ try{ window.close(); }catch{} }, 1200);
 }
 
@@ -77,12 +94,9 @@ function median(arr){
 }
 
 async function getDeviceName(){
-  // Best: Scalefusion variable via query string (see step 3)
   const p = new URL(location.href).searchParams;
   const qsd = p.get("device");
   if (qsd) return qsd.substring(0,128);
-
-  // Fallback: model from UA
   const ua = navigator.userAgent || "";
   const m = ua.match(/\((Android[^;]*;[^)]*)\)/);
   return (m ? m[1] : ua).slice(0,128) || "Android";
