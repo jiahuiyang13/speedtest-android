@@ -1,0 +1,114 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Speed Check</title>
+<style>body{font:16px system-ui;margin:0;padding:20px}</style>
+<div id="s">Running network speed test…</div>
+
+<script>
+const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec";
+const SECRET        = "secretkey";
+
+const WARMUP_BYTES=8_000_000, PROBE_BYTES=25_000_000;
+const WARMUP_TO=30, PROBE_TO=45, RUNS=3; // set RUNS=1 if you only want one sample
+
+main().catch(e => finish(false, "err:" + (e && e.message || e)));
+
+async function main(){
+  const device = await getDeviceName();
+  const timestamp = new Date().toISOString();
+  let public_ip = "";
+  try {
+    const r = await fetch("https://api.ipify.org?format=json", {cache:"no-store"});
+    public_ip = (await r.json()).ip || "";
+  } catch {}
+
+  // warmup (ignore result)
+  try { await httpProbe(WARMUP_BYTES, WARMUP_TO); } catch {}
+
+  // N runs, median
+  const runs = [];
+  for (let i=0;i<RUNS;i++){
+    try { runs.push(await httpProbe(PROBE_BYTES, PROBE_TO)); } catch {}
+  }
+  const mbps = median(runs);
+  const payload = {
+    secret: SECRET,
+    timestamp,
+    device,
+    public_ip,
+    download_mbps: Number.isFinite(mbps) ? Math.round(mbps*100)/100 : null
+  };
+
+  const ok = await postOrGetFallback(COLLECTOR_URL, payload);
+  finish(ok, ok ? `OK ${payload.download_mbps} Mbps` : "Upload failed");
+}
+
+function finish(ok, msg){
+  const el = document.getElementById("s");
+  el.textContent = msg || (ok ? "Done" : "Failed");
+  // auto-close after a moment (good for kiosk or workflow launch)
+  setTimeout(()=>{ try{ window.close(); }catch{} }, 1200);
+}
+
+async function httpProbe(bytes, timeoutSec){
+  const url = `https://speed.cloudflare.com/__down?bytes=${bytes}&nonce=${Math.random().toString(36).slice(2)}`;
+  const ctrl = new AbortController();
+  const tid  = setTimeout(()=>ctrl.abort(), timeoutSec*1000);
+  const t0 = performance.now();
+  let total = 0;
+  const res = await fetch(url, {signal: ctrl.signal, cache:"no-store"});
+  const reader = res.body.getReader();
+  for(;;){
+    const {done, value} = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+  }
+  clearTimeout(tid);
+  const sec = (performance.now() - t0)/1000;
+  if (sec <= 0) throw new Error("zero time");
+  return (total*8/1e6)/sec; // Mbps
+}
+
+function median(arr){
+  if (!arr || !arr.length) return NaN;
+  const s = arr.slice().sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
+}
+
+async function getDeviceName(){
+  // Best: Scalefusion variable via query string (see step 3)
+  const p = new URL(location.href).searchParams;
+  const qsd = p.get("device");
+  if (qsd) return qsd.substring(0,128);
+
+  // Fallback: model from UA
+  const ua = navigator.userAgent || "";
+  const m = ua.match(/\((Android[^;]*;[^)]*)\)/);
+  return (m ? m[1] : ua).slice(0,128) || "Android";
+}
+
+async function postOrGetFallback(url, body){
+  try {
+    const r = await fetch(url, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    const t = await r.text();
+    if (r.ok && !/^Forbidden|^ERR:/i.test(t)) return true;
+  } catch {}
+  const q = new URLSearchParams({
+    secret: body.secret,
+    device: body.device,
+    timestamp: body.timestamp,
+    public_ip: body.public_ip,
+    download_mbps: String(body.download_mbps ?? "")
+  });
+  try {
+    const g = await fetch(url + (url.includes("?")?"&":"?") + q.toString(), {method:"GET"});
+    const tt = await g.text();
+    return g.ok && !/^Forbidden|^ERR:/i.test(tt);
+  } catch { return false; }
+}
+</script>
