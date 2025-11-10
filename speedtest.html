@@ -1,224 +1,128 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Speed Check</title>
-  <style>
-    body {
-      font: 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
-      padding: 20px;
-      background: #fafafa;
-      color: #222;
-    }
-  </style>
-</head>
-<body>
-  <div id="s">Running network speed test…</div>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Speed Check</title>
+<style>body{font:16px system-ui;margin:0;padding:20px}</style>
+<div id="s">Running network speed test…</div>
 
-  <script>
-    /********* CONFIG: UPDATE THIS *********/
-    const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec";
-    const SECRET        = "secretkey"; // must match Apps Script SECRET_KEY
-    /***************************************/
+<script>
+const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec";
+const SECRET        = "secretkey";
 
-    const WARMUP_BYTES = 8_000_000;
-    const PROBE_BYTES  = 25_000_000;
-    const WARMUP_TO    = 30;   // seconds
-    const PROBE_TO     = 45;   // seconds
-    const RUNS         = 3;    // set to 1 if you only want a single measurement
+const WARMUP_BYTES=8_000_000, PROBE_BYTES=25_000_000;
+const WARMUP_TO=30, PROBE_TO=45, RUNS=3; // set RUNS=1 if you only want one sample
 
-    main().catch(e => finish(false, "err:" + (e && e.message || e)));
+main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
-    // ---------- Central-time helper ----------
-    function zonedISO(tz = "America/Chicago") {
-      const now = new Date();
-      const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: tz,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hourCycle: "h23"
-      }).formatToParts(now).reduce((a, p) => {
-        a[p.type] = p.value;
-        return a;
-      }, {});
-      const yyyy = parts.year;
-      const MM   = parts.month;
-      const dd   = parts.day;
-      const HH   = parts.hour;
-      const mm   = parts.minute;
-      const ss   = parts.second;
+// ---------- Central-time helper ----------
+function zonedISO(tz = 'America/Chicago') {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now).reduce((a,p)=>{a[p.type]=p.value;return a;},{});
+  const yyyy = parts.year, MM = parts.month, dd = parts.day;
+  const HH = parts.hour, mm = parts.minute, ss = parts.second;
+  const inDST = new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'short'})
+                  .format(now).includes('CDT');
+  const tzAbbr = inDST ? 'CDT' : 'CST';
+  return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
+}
+// ----------------------------------------
 
-      const inDST = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        timeZoneName: "short"
-      }).format(now).includes("CDT");
+async function main(){
+  const device = await getDeviceName();
+  const timestamp = zonedISO('America/Chicago');
+  let public_ip = "";
+  try {
+    const r = await fetch("https://api.ipify.org?format=json",{cache:"no-store"});
+    public_ip = (await r.json()).ip || "";
+  } catch {}
 
-      const tzAbbr = inDST ? "CDT" : "CST";
-      return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
-    }
-    // ----------------------------------------
+  // warmup (ignore result)
+  try { await httpProbe(WARMUP_BYTES, WARMUP_TO); } catch {}
 
-    async function main() {
-      const device    = await getDeviceName();
-      const timestamp = zonedISO("America/Chicago");
-      const userAgent = navigator.userAgent || "";
+  // N runs, median
+  const runs = [];
+  for (let i=0;i<RUNS;i++){
+    try { runs.push(await httpProbe(PROBE_BYTES, PROBE_TO)); } catch {}
+  }
+  const mbps = median(runs);
+  const payload = {
+    secret: SECRET,
+    timestamp,
+    device,
+    public_ip,
+    download_mbps: Number.isFinite(mbps) ? Math.round(mbps*100)/100 : null
+  };
 
-      let public_ip = "";
-      try {
-        const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
-        public_ip = (await r.json()).ip || "";
-      } catch (e) {
-        // ignore IP failures; script still reports
-      }
+  const ok = await postOrGetFallback(COLLECTOR_URL, payload);
+  finish(ok, ok ? `OK ${payload.download_mbps} Mbps` : "Upload failed");
+}
 
-      // Warmup (ignore result)
-      try {
-        await httpProbe(WARMUP_BYTES, WARMUP_TO);
-      } catch (e) {
-        // ignore warmup failures
-      }
+function finish(ok, msg){
+  const el = document.getElementById("s");
+  el.textContent = msg || (ok ? "Done" : "Failed");
+  setTimeout(()=>{ try{ window.close(); }catch{} }, 1200);
+}
 
-      // PROBE runs
-      const runs = [];
-      for (let i = 0; i < RUNS; i++) {
-        try {
-          const mbps = await httpProbe(PROBE_BYTES, PROBE_TO);
-          if (Number.isFinite(mbps)) runs.push(mbps);
-        } catch (e) {
-          // ignore individual run failure
-        }
-      }
+async function httpProbe(bytes, timeoutSec){
+  const url = `https://speed.cloudflare.com/__down?bytes=${bytes}&nonce=${Math.random().toString(36).slice(2)}`;
+  const ctrl = new AbortController();
+  const tid  = setTimeout(()=>ctrl.abort(), timeoutSec*1000);
+  const t0 = performance.now();
+  let total = 0;
+  const res = await fetch(url, {signal: ctrl.signal, cache:"no-store"});
+  const reader = res.body.getReader();
+  for(;;){
+    const {done, value} = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+  }
+  clearTimeout(tid);
+  const sec = (performance.now() - t0)/1000;
+  if (sec <= 0) throw new Error("zero time");
+  return (total*8/1e6)/sec; // Mbps
+}
 
-      const mbps = median(runs);
-      const download_mbps = Number.isFinite(mbps)
-        ? Math.round(mbps * 100) / 100
-        : null;
+function median(arr){
+  if (!arr || !arr.length) return NaN;
+  const s = arr.slice().sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
+}
 
-      const payload = {
-        secret: SECRET,
-        timestamp,
-        device,
-        public_ip,
-        user_agent: userAgent,
-        download_mbps
-      };
+async function getDeviceName(){
+  const p = new URL(location.href).searchParams;
+  const qsd = p.get("device");
+  if (qsd) return qsd.substring(0,128);
+  const ua = navigator.userAgent || "";
+  const m = ua.match(/\((Android[^;]*;[^)]*)\)/);
+  return (m ? m[1] : ua).slice(0,128) || "Android";
+}
 
-      const ok = await postOrGetFallback(COLLECTOR_URL, payload);
-      const msg = ok
-        ? (download_mbps != null
-            ? `OK ${download_mbps} Mbps`
-            : "OK (no result)")
-        : "Upload failed";
-
-      finish(ok, msg);
-    }
-
-    function finish(ok, msg) {
-      const el = document.getElementById("s");
-      el.textContent = msg || (ok ? "Done" : "Failed");
-      // Close the tab/window after a short delay (if allowed)
-      setTimeout(() => {
-        try { window.close(); } catch (e) {}
-      }, 1200);
-    }
-
-    async function httpProbe(bytes, timeoutSec) {
-      const url = `https://speed.cloudflare.com/__down?bytes=${bytes}&nonce=${Math.random().toString(36).slice(2)}`;
-      const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), timeoutSec * 1000);
-
-      const t0 = performance.now();
-      const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
-
-      if (!res.body || !res.body.getReader) {
-        clearTimeout(tid);
-        throw new Error("ReadableStream not supported");
-      }
-
-      const reader = res.body.getReader();
-      let total = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-      }
-
-      clearTimeout(tid);
-
-      const sec = (performance.now() - t0) / 1000;
-      if (sec <= 0) throw new Error("zero time");
-      // Mbps = bits / second / 1e6
-      return (total * 8 / 1e6) / sec;
-    }
-
-    function median(arr) {
-      if (!arr || !arr.length) return NaN;
-      const s = arr.slice().sort((a, b) => a - b);
-      const m = Math.floor(s.length / 2);
-      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-    }
-
-    async function getDeviceName() {
-      const p   = new URL(location.href).searchParams;
-      const qsd = p.get("device");
-
-      // If launched with a proper device param (e.g. PCs or anything explicit)
-      // AND it is not an unsubstituted placeholder, use it.
-      if (qsd && !qsd.includes("$")) {
-        return qsd.substring(0, 128);
-      }
-
-      // Otherwise, fall back to something from the UA for logging.
-      const ua = navigator.userAgent || "";
-      const m  = ua.match(/\((Android[^;]*;[^)]*)\)/);
-      const guess = (m ? m[1] : ua).slice(0, 128);
-      return guess || "Unknown";
-    }
-
-    async function postOrGetFallback(url, body) {
-      // Try POST (preferred)
-      try {
-        const r = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        const t = await r.text();
-        if (r.ok && !/^Forbidden|^ERR:/i.test(t)) {
-          return true;
-        }
-      } catch (e) {
-        // fall through to GET
-      }
-
-      // Fallback: GET with query params (works with your existing Apps Script handler)
-      const q = new URLSearchParams({
-        secret: body.secret,
-        device: body.device || "",
-        timestamp: body.timestamp || "",
-        public_ip: body.public_ip || "",
-        user_agent: body.user_agent || "",
-        download_mbps: body.download_mbps != null ? String(body.download_mbps) : ""
-      });
-
-      try {
-        const g = await fetch(
-          url + (url.includes("?") ? "&" : "?") + q.toString(),
-          { method: "GET" }
-        );
-        const tt = await g.text();
-        return g.ok && !/^Forbidden|^ERR:/i.test(tt);
-      } catch (e) {
-        return false;
-      }
-    }
-  </script>
-</body>
-</html>
+async function postOrGetFallback(url, body){
+  try {
+    const r = await fetch(url, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    const t = await r.text();
+    if (r.ok && !/^Forbidden|^ERR:/i.test(t)) return true;
+  } catch {}
+  const q = new URLSearchParams({
+    secret: body.secret,
+    device: body.device,
+    timestamp: body.timestamp,
+    public_ip: body.public_ip,
+    download_mbps: String(body.download_mbps ?? "")
+  });
+  try {
+    const g = await fetch(url + (url.includes("?")?"&":"?") + q.toString(), {method:"GET"});
+    const tt = await g.text();
+    return g.ok && !/^Forbidden|^ERR:/i.test(tt);
+  } catch { return false; }
+}
+</script>
