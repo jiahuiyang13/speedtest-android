@@ -20,18 +20,18 @@
   <script>
     /********* CONFIG *********/
     const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec";
-    const SECRET        = "secretkey"; // must match Apps Script SECRET_KEY
+    const SECRET        = "secretkey"; // must match Apps Script
     /**************************/
 
     const WARMUP_BYTES = 8_000_000;
     const PROBE_BYTES  = 25_000_000;
     const WARMUP_TO    = 30; // seconds
     const PROBE_TO     = 45; // seconds
-    const RUNS         = 3;  // number of measured runs
+    const RUNS         = 3;  // measured runs
 
     main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
-    // ---------- Central time helper ----------
+    // Central-time timestamp helper
     function zonedISO(tz = "America/Chicago") {
       const now = new Date();
       const parts = new Intl.DateTimeFormat("en-CA", {
@@ -43,12 +43,8 @@
         a[p.type] = p.value;
         return a;
       }, {});
-      const yyyy = parts.year;
-      const MM   = parts.month;
-      const dd   = parts.day;
-      const HH   = parts.hour;
-      const mm   = parts.minute;
-      const ss   = parts.second;
+      const yyyy = parts.year, MM = parts.month, dd = parts.day;
+      const HH = parts.hour, mm = parts.minute, ss = parts.second;
 
       const inDST = new Intl.DateTimeFormat("en-US", {
         timeZone: tz,
@@ -59,7 +55,7 @@
       return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
     }
 
-    // ---------- Stable per-device ID via localStorage ----------
+    // Stable per-device ID via localStorage
     function getOrCreateDeviceKey() {
       const KEY = "speedtest_device_key_v1";
       try {
@@ -72,14 +68,14 @@
         localStorage.setItem(KEY, k);
         return k;
       } catch (e) {
-        // If localStorage unavailable, use non-persistent fallback
+        // If localStorage unavailable, use a random non-persistent key
         return "st-fallback-" + Math.random().toString(36).slice(2, 10);
       }
     }
 
     async function main() {
-      const device    = await getDeviceName();       // descriptive string
-      const deviceKey = getOrCreateDeviceKey();      // stable per-browser ID
+      const device    = await getDeviceName();       // descriptive label
+      const deviceKey = getOrCreateDeviceKey();      // stable ID used by backend
       const timestamp = zonedISO("America/Chicago");
       const userAgent = navigator.userAgent || "";
 
@@ -87,9 +83,7 @@
       try {
         const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
         public_ip = (await r.json()).ip || "";
-      } catch (e) {
-        // ignore IP failure
-      }
+      } catch (e) {}
 
       // Warmup (ignore result)
       try {
@@ -146,6 +140,7 @@
 
       const t0 = performance.now();
       const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+
       if (!res.body || !res.body.getReader) {
         clearTimeout(tid);
         throw new Error("ReadableStream not supported");
@@ -175,11 +170,9 @@
     async function getDeviceName() {
       const p   = new URL(location.href).searchParams;
       const qsd = p.get("device");
-
       if (qsd && !qsd.includes("$")) {
         return qsd.substring(0, 128);
       }
-
       const ua = navigator.userAgent || "";
       const m  = ua.match(/\(([^)]*)\)/);
       const guess = (m ? m[1] : ua).slice(0, 128);
@@ -187,7 +180,7 @@
     }
 
     async function postOrGetFallback(url, body) {
-      // Try POST JSON
+      // Try POST JSON first
       try {
         const r = await fetch(url, {
           method: "POST",
