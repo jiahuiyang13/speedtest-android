@@ -19,19 +19,19 @@
 
   <script>
     /********* CONFIG *********/
-    const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec"; 
-    const SECRET        = "secretkey";                  // <-- must match Apps Script
+    const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec";
+    const SECRET        = "secretkey"; // must match Apps Script SECRET_KEY
     /**************************/
 
     const WARMUP_BYTES = 8_000_000;
     const PROBE_BYTES  = 25_000_000;
-    const WARMUP_TO    = 30;  // seconds
-    const PROBE_TO     = 45;  // seconds
-    const RUNS         = 3;   // number of measured runs
+    const WARMUP_TO    = 30; // seconds
+    const PROBE_TO     = 45; // seconds
+    const RUNS         = 3;  // number of measured runs
 
     main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
-    // ---------- Time helper (CST/CDT labeled) ----------
+    // ---------- Central time helper ----------
     function zonedISO(tz = "America/Chicago") {
       const now = new Date();
       const parts = new Intl.DateTimeFormat("en-CA", {
@@ -54,8 +54,8 @@
         timeZone: tz,
         timeZoneName: "short"
       }).format(now).includes("CDT");
-
       const tzAbbr = inDST ? "CDT" : "CST";
+
       return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
     }
 
@@ -72,14 +72,14 @@
         localStorage.setItem(KEY, k);
         return k;
       } catch (e) {
-        // If localStorage blocked, use a non-persistent fallback
+        // If localStorage unavailable, use non-persistent fallback
         return "st-fallback-" + Math.random().toString(36).slice(2, 10);
       }
     }
 
     async function main() {
-      const device    = await getDeviceName();       // descriptive string (UA / ?device)
-      const deviceKey = getOrCreateDeviceKey();      // stable ID per browser/device
+      const device    = await getDeviceName();       // descriptive string
+      const deviceKey = getOrCreateDeviceKey();      // stable per-browser ID
       const timestamp = zonedISO("America/Chicago");
       const userAgent = navigator.userAgent || "";
 
@@ -88,15 +88,13 @@
         const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
         public_ip = (await r.json()).ip || "";
       } catch (e) {
-        // ignore IP failure; still log the rest
+        // ignore IP failure
       }
 
       // Warmup (ignore result)
       try {
         await httpProbe(WARMUP_BYTES, WARMUP_TO);
-      } catch (e) {
-        // ignore warmup errors
-      }
+      } catch (e) {}
 
       // Measured runs
       const runs = [];
@@ -104,9 +102,7 @@
         try {
           const v = await httpProbe(PROBE_BYTES, PROBE_TO);
           if (Number.isFinite(v)) runs.push(v);
-        } catch (e) {
-          // ignore individual run failure
-        }
+        } catch (e) {}
       }
 
       const mbps = median(runs);
@@ -128,11 +124,9 @@
 
       let msg;
       if (ok) {
-        if (download_mbps != null) {
-          msg = `OK ${download_mbps} Mbps`;
-        } else {
-          msg = "OK (no result)";
-        }
+        msg = download_mbps != null
+          ? `OK ${download_mbps} Mbps`
+          : "OK (no result)";
       } else {
         msg = "Upload failed";
       }
@@ -152,7 +146,6 @@
 
       const t0 = performance.now();
       const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
-
       if (!res.body || !res.body.getReader) {
         clearTimeout(tid);
         throw new Error("ReadableStream not supported");
@@ -183,12 +176,10 @@
       const p   = new URL(location.href).searchParams;
       const qsd = p.get("device");
 
-      // if you ever pass a real device label via ?device=, use it
       if (qsd && !qsd.includes("$")) {
         return qsd.substring(0, 128);
       }
 
-      // otherwise, fall back to UA-based description
       const ua = navigator.userAgent || "";
       const m  = ua.match(/\(([^)]*)\)/);
       const guess = (m ? m[1] : ua).slice(0, 128);
@@ -196,7 +187,7 @@
     }
 
     async function postOrGetFallback(url, body) {
-      // Try POST first
+      // Try POST JSON
       try {
         const r = await fetch(url, {
           method: "POST",
@@ -204,12 +195,8 @@
           body: JSON.stringify(body)
         });
         const t = await r.text();
-        if (r.ok && !/^Forbidden|^ERR:/i.test(t)) {
-          return true;
-        }
-      } catch (e) {
-        // fall through to GET
-      }
+        if (r.ok && !/^Forbidden|^ERR:/i.test(t)) return true;
+      } catch (e) {}
 
       // Fallback GET
       const q = new URLSearchParams({
