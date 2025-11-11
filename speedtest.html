@@ -19,19 +19,19 @@
 
   <script>
     /********* CONFIG *********/
-    const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec"; // <- paste Apps Script Web App URL
-    const SECRET        = "secretkey";                  // <- must match Apps Script SECRET_KEY
+    const COLLECTOR_URL = "https://script.google.com/macros/s/AKfycbwsdxYyIKa3QRzsrjUISq660hZaLxTLlDXwzjxNWL3l0wriqi3Mrfs7OjC4xTJl-saj3w/exec"; 
+    const SECRET        = "secretkey";                  // <-- must match Apps Script
     /**************************/
 
     const WARMUP_BYTES = 8_000_000;
     const PROBE_BYTES  = 25_000_000;
-    const WARMUP_TO    = 30;   // sec
-    const PROBE_TO     = 45;   // sec
-    const RUNS         = 3;    // # of measured runs
+    const WARMUP_TO    = 30;  // seconds
+    const PROBE_TO     = 45;  // seconds
+    const RUNS         = 3;   // number of measured runs
 
     main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
-    // ----- Time helper (CST/CDT, labeled) -----
+    // ---------- Time helper (CST/CDT labeled) ----------
     function zonedISO(tz = "America/Chicago") {
       const now = new Date();
       const parts = new Intl.DateTimeFormat("en-CA", {
@@ -59,27 +59,26 @@
       return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
     }
 
-    // ----- Stable per-device ID via localStorage -----
+    // ---------- Stable per-device ID via localStorage ----------
     function getOrCreateDeviceKey() {
       const KEY = "speedtest_device_key_v1";
       try {
         let k = localStorage.getItem(KEY);
         if (k && typeof k === "string" && k.length > 0) return k;
 
-        // random-ish but stable once created
         k = "st-" +
             Math.random().toString(36).slice(2, 10) + "-" +
             Date.now().toString(36).slice(-4);
         localStorage.setItem(KEY, k);
         return k;
       } catch (e) {
-        // if localStorage unavailable, fallback (not perfectly stable)
+        // If localStorage blocked, use a non-persistent fallback
         return "st-fallback-" + Math.random().toString(36).slice(2, 10);
       }
     }
 
     async function main() {
-      const device    = await getDeviceName();       // human-ish descriptor
+      const device    = await getDeviceName();       // descriptive string (UA / ?device)
       const deviceKey = getOrCreateDeviceKey();      // stable ID per browser/device
       const timestamp = zonedISO("America/Chicago");
       const userAgent = navigator.userAgent || "";
@@ -88,10 +87,16 @@
       try {
         const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
         public_ip = (await r.json()).ip || "";
-      } catch {}
+      } catch (e) {
+        // ignore IP failure; still log the rest
+      }
 
-      // Warmup run (ignored)
-      try { await httpProbe(WARMUP_BYTES, WARMUP_TO); } catch {}
+      // Warmup (ignore result)
+      try {
+        await httpProbe(WARMUP_BYTES, WARMUP_TO);
+      } catch (e) {
+        // ignore warmup errors
+      }
 
       // Measured runs
       const runs = [];
@@ -99,7 +104,9 @@
         try {
           const v = await httpProbe(PROBE_BYTES, PROBE_TO);
           if (Number.isFinite(v)) runs.push(v);
-        } catch {}
+        } catch (e) {
+          // ignore individual run failure
+        }
       }
 
       const mbps = median(runs);
@@ -119,18 +126,23 @@
 
       const ok = await postOrGetFallback(COLLECTOR_URL, payload);
 
-      const msg = ok
-        ? (download_mbps != null
-            ? `OK ${download_mbps} Mbps`
-            : "OK (no result)`)
-        : "Upload failed";
+      let msg;
+      if (ok) {
+        if (download_mbps != null) {
+          msg = `OK ${download_mbps} Mbps`;
+        } else {
+          msg = "OK (no result)";
+        }
+      } else {
+        msg = "Upload failed";
+      }
 
       finish(ok, msg);
     }
 
     function finish(ok, msg) {
       document.getElementById("s").textContent = msg || (ok ? "Done" : "Failed");
-      setTimeout(() => { try { window.close(); } catch {} }, 1200);
+      setTimeout(() => { try { window.close(); } catch (e) {} }, 1200);
     }
 
     async function httpProbe(bytes, timeoutSec) {
@@ -162,21 +174,21 @@
 
     function median(arr) {
       if (!arr || !arr.length) return NaN;
-      const s = arr.slice().sort((a,b)=>a-b);
+      const s = arr.slice().sort((a, b) => a - b);
       const m = Math.floor(s.length / 2);
-      return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
     }
 
     async function getDeviceName() {
       const p   = new URL(location.href).searchParams;
       const qsd = p.get("device");
 
-      // trust explicit non-placeholder ?device=
+      // if you ever pass a real device label via ?device=, use it
       if (qsd && !qsd.includes("$")) {
         return qsd.substring(0, 128);
       }
 
-      // fallback: UA-based string (for your reference only)
+      // otherwise, fall back to UA-based description
       const ua = navigator.userAgent || "";
       const m  = ua.match(/\(([^)]*)\)/);
       const guess = (m ? m[1] : ua).slice(0, 128);
@@ -184,7 +196,7 @@
     }
 
     async function postOrGetFallback(url, body) {
-      // Try POST JSON
+      // Try POST first
       try {
         const r = await fetch(url, {
           method: "POST",
@@ -192,8 +204,12 @@
           body: JSON.stringify(body)
         });
         const t = await r.text();
-        if (r.ok && !/^Forbidden|^ERR:/i.test(t)) return true;
-      } catch {}
+        if (r.ok && !/^Forbidden|^ERR:/i.test(t)) {
+          return true;
+        }
+      } catch (e) {
+        // fall through to GET
+      }
 
       // Fallback GET
       const q = new URLSearchParams({
@@ -204,7 +220,8 @@
         public_ip: body.public_ip || "",
         user_agent: body.user_agent || "",
         download_mbps: body.download_mbps != null
-          ? String(body.download_mbps) : ""
+          ? String(body.download_mbps)
+          : ""
       });
 
       try {
@@ -214,7 +231,7 @@
         );
         const tt = await g.text();
         return g.ok && !/^Forbidden|^ERR:/i.test(tt);
-      } catch {
+      } catch (e) {
         return false;
       }
     }
