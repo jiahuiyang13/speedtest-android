@@ -29,9 +29,52 @@
     const PROBE_TO     = 45; // seconds
     const RUNS         = 3;  // measured runs
 
+    // --- 1) Ensure each device has a stable ?device=ID in the URL ---
+    (function ensureDeviceParam() {
+      const url = new URL(location.href);
+      const current = url.searchParams.get("device");
+
+      const looksBad =
+        !current ||
+        current.includes("$") ||
+        current.startsWith("Mozilla/") ||
+        current === "Unknown";
+
+      if (!looksBad) {
+        // Already have a decent device ID, continue normally
+        return;
+      }
+
+      const KEY = "speedtest_device_id_v1";
+      let id = null;
+
+      try {
+        id = localStorage.getItem(KEY);
+      } catch (e) {
+        // ignore
+      }
+
+      if (!id) {
+        id =
+          "dev-" +
+          Math.random().toString(36).slice(2, 8) + "-" +
+          Date.now().toString(36).slice(-4);
+        try {
+          localStorage.setItem(KEY, id);
+        } catch (e) {
+          // if localStorage fails, we still use this id (non-persistent)
+        }
+      }
+
+      url.searchParams.set("device", id);
+
+      // Reload once with the new device ID in the URL
+      location.replace(url.toString());
+    })();
+
+    // --- 2) Main flow ---
     main().catch(e => finish(false, "err:" + (e && e.message || e)));
 
-    // Central-time timestamp helper
     function zonedISO(tz = "America/Chicago") {
       const now = new Date();
       const parts = new Intl.DateTimeFormat("en-CA", {
@@ -55,27 +98,8 @@
       return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss} ${tzAbbr}`;
     }
 
-    // Stable per-device ID via localStorage
-    function getOrCreateDeviceKey() {
-      const KEY = "speedtest_device_key_v1";
-      try {
-        let k = localStorage.getItem(KEY);
-        if (k && typeof k === "string" && k.length > 0) return k;
-
-        k = "st-" +
-            Math.random().toString(36).slice(2, 10) + "-" +
-            Date.now().toString(36).slice(-4);
-        localStorage.setItem(KEY, k);
-        return k;
-      } catch (e) {
-        // If localStorage unavailable, use a random non-persistent key
-        return "st-fallback-" + Math.random().toString(36).slice(2, 10);
-      }
-    }
-
     async function main() {
-      const device    = await getDeviceName();       // descriptive label
-      const deviceKey = getOrCreateDeviceKey();      // stable ID used by backend
+      const device    = getDeviceFromQuery();       // now guaranteed stable per device
       const timestamp = zonedISO("America/Chicago");
       const userAgent = navigator.userAgent || "";
 
@@ -86,9 +110,7 @@
       } catch (e) {}
 
       // Warmup (ignore result)
-      try {
-        await httpProbe(WARMUP_BYTES, WARMUP_TO);
-      } catch (e) {}
+      try { await httpProbe(WARMUP_BYTES, WARMUP_TO); } catch (e) {}
 
       // Measured runs
       const runs = [];
@@ -108,7 +130,6 @@
         secret: SECRET,
         timestamp,
         device,
-        device_key: deviceKey,
         public_ip,
         user_agent: userAgent,
         download_mbps
@@ -128,8 +149,15 @@
       finish(ok, msg);
     }
 
+    function getDeviceFromQuery() {
+      const url = new URL(location.href);
+      const dev = url.searchParams.get("device") || "";
+      return dev.substring(0, 128);
+    }
+
     function finish(ok, msg) {
-      document.getElementById("s").textContent = msg || (ok ? "Done" : "Failed");
+      document.getElementById("s").textContent =
+        msg || (ok ? "Done" : "Failed");
       setTimeout(() => { try { window.close(); } catch (e) {} }, 1200);
     }
 
@@ -157,7 +185,7 @@
 
       const sec = (performance.now() - t0) / 1000;
       if (sec <= 0) throw new Error("zero time");
-      return (total * 8 / 1e6) / sec; // Mbps
+      return (total * 8 / 1e6) / sec;
     }
 
     function median(arr) {
@@ -167,20 +195,8 @@
       return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
     }
 
-    async function getDeviceName() {
-      const p   = new URL(location.href).searchParams;
-      const qsd = p.get("device");
-      if (qsd && !qsd.includes("$")) {
-        return qsd.substring(0, 128);
-      }
-      const ua = navigator.userAgent || "";
-      const m  = ua.match(/\(([^)]*)\)/);
-      const guess = (m ? m[1] : ua).slice(0, 128);
-      return guess || "Unknown";
-    }
-
     async function postOrGetFallback(url, body) {
-      // Try POST JSON first
+      // Try POST JSON
       try {
         const r = await fetch(url, {
           method: "POST",
@@ -195,7 +211,6 @@
       const q = new URLSearchParams({
         secret: body.secret,
         device: body.device || "",
-        device_key: body.device_key || "",
         timestamp: body.timestamp || "",
         public_ip: body.public_ip || "",
         user_agent: body.user_agent || "",
